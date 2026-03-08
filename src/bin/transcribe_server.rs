@@ -3,13 +3,9 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use transcribe_rs::{
-    audio,
-    engines::parakeet::{
-        ParakeetEngine, ParakeetInferenceParams, ParakeetModelParams, TimestampGranularity,
-    },
-    TranscriptionEngine,
-};
+use transcribe_rs::onnx::parakeet::{ParakeetModel, ParakeetParams, TimestampGranularity};
+use transcribe_rs::onnx::Quantization;
+use transcribe_rs::audio;
 
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
@@ -23,7 +19,7 @@ fn get_audio_duration(path: &PathBuf) -> Result<f64, Box<dyn std::error::Error>>
 
 #[cfg(unix)]
 fn transcribe_once(
-    engine: &mut ParakeetEngine,
+    model: &mut ParakeetModel,
     wav_path: &PathBuf,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let samples = audio::read_wav_samples(wav_path)?;
@@ -32,11 +28,13 @@ fn transcribe_once(
     eprintln!("Transcribing cached model with fresh audio");
     let transcribe_start = Instant::now();
 
-    let params = ParakeetInferenceParams {
-        timestamp_granularity: TimestampGranularity::None,
-    };
-
-    let result = engine.transcribe_samples(samples.to_vec(), Some(params))?;
+    let result = model.transcribe_with(
+        &samples,
+        &ParakeetParams {
+            timestamp_granularity: Some(TimestampGranularity::Segment),
+            ..Default::default()
+        },
+    )?;
     let transcribe_duration = transcribe_start.elapsed();
     let speedup_factor = audio_duration / transcribe_duration.as_secs_f64();
 
@@ -54,7 +52,6 @@ fn transcribe_once(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let mut engine = ParakeetEngine::new();
     let home = std::env::var("HOME")?;
     let model_path = PathBuf::from(home).join(".local/share/models/parakeet-tdt-0.6b-v3-int8");
     let wav_path = PathBuf::from("/tmp/dictate.wav");
@@ -64,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Loading model: {:?}", model_path);
 
     let load_start = Instant::now();
-    engine.load_model_with_params(&model_path, ParakeetModelParams::int8())?;
+    let mut model = ParakeetModel::load(&model_path, &Quantization::Int8)?;
     let load_duration = load_start.elapsed();
     eprintln!("Model loaded in {:.2?}", load_duration);
 
@@ -91,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        match transcribe_once(&mut engine, &wav_path) {
+        match transcribe_once(&mut model, &wav_path) {
             Ok(text) => {
                 let _ = writeln!(stream, "{}", text);
             }
@@ -101,7 +98,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    engine.unload_model();
     Ok(())
 }
 
