@@ -21,6 +21,7 @@ fn get_audio_duration(path: &PathBuf) -> Result<f64, Box<dyn std::error::Error>>
 fn transcribe_once(
     model: &mut CanaryModel,
     wav_path: &PathBuf,
+    language_hint: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let samples = audio::read_wav_samples(wav_path)?;
     let audio_duration = get_audio_duration(wav_path)?;
@@ -28,7 +29,10 @@ fn transcribe_once(
     eprintln!("Transcribing cached model with fresh audio");
     let transcribe_start = Instant::now();
 
-    let params = CanaryParams::default();
+    let mut params = CanaryParams::default();
+    if let Some(lang) = language_hint {
+        params.language = Some(lang.to_string());
+    }
     let result = model.transcribe_with(&samples, &params)?;
     let transcribe_duration = transcribe_start.elapsed();
     let speedup_factor = audio_duration / transcribe_duration.as_secs_f64();
@@ -77,13 +81,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        let mut _request = Vec::new();
-        if let Err(err) = stream.read_to_end(&mut _request) {
+        let mut request = Vec::new();
+        if let Err(err) = stream.read_to_end(&mut request) {
             let _ = writeln!(stream, "ERROR: failed to read request: {}", err);
             continue;
         }
 
-        match transcribe_once(&mut model, &wav_path) {
+        let request_text = String::from_utf8_lossy(&request);
+        let language_hint = request_text.trim();
+        let language_hint = if language_hint.is_empty() {
+            None
+        } else {
+            Some(language_hint)
+        };
+        let effective_language = language_hint.unwrap_or("en");
+        eprintln!("Language hint (request): {}", effective_language);
+
+        match transcribe_once(&mut model, &wav_path, language_hint) {
             Ok(text) => {
                 let _ = writeln!(stream, "{}", text);
             }
